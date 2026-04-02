@@ -12,11 +12,13 @@ export type ChainKey =
   | 'avalanche'
   | 'optimism';
 
-// Мінімум методів, які нам треба (без "важких" типів viem)
+// Extended client type — includes methods needed for both Flow 1 and Flow 2
 export type EvmClient = {
   getTransaction: (args: { hash: `0x${string}` }) => Promise<{ to: `0x${string}` | null }>;
   getTransactionReceipt: (args: { hash: `0x${string}` }) => Promise<{ logs: any[] }>;
   readContract: (args: any) => Promise<any>;
+  getBlockNumber: () => Promise<bigint>;
+  request: (args: { method: string; params: any[] }) => Promise<any>;
 };
 
 const RPC: Record<ChainKey, string> = {
@@ -55,6 +57,11 @@ export function getPublicClient(chainKey: ChainKey): EvmClient {
 
   clients.set(chainKey, client);
   return client;
+}
+
+/** Returns all chain keys that have an RPC configured */
+export function getConfiguredChains(): ChainKey[] {
+  return (Object.keys(RPC) as ChainKey[]).filter((k) => Boolean(RPC[k]));
 }
 
 // Hardcoded fallbacks
