@@ -168,7 +168,14 @@ async function pollAllChains() {
 export async function startTopUpPoller() {
     console.log(`[topUpPoller] starting with interval=${POLL_INTERVAL_MS}ms, minAmount=${MIN_AMOUNT}`);
     // Load addresses from Supabase into cache
-    await initStore();
+    try {
+        console.log('[topUpPoller] calling initStore()...');
+        await initStore();
+        console.log('[topUpPoller] initStore() completed');
+    }
+    catch (err) {
+        console.error('[topUpPoller] initStore() FAILED:', err?.message, err?.stack);
+    }
     // Initial poll after a short delay
     setTimeout(() => {
         pollAllChains().catch((err) => console.error('[topUpPoller] initial poll error:', err?.message));

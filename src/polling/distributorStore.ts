@@ -33,17 +33,23 @@ async function ensureCache(): Promise<void> {
 
 async function refreshCache(): Promise<void> {
   try {
+    console.log('[distributorStore] refreshCache: connecting to Supabase...');
     const cutoff = new Date(Date.now() - TTL_DAYS * 24 * 3600 * 1000).toISOString();
 
-    const { data, error } = await getSupabase()
+    const sb = getSupabase();
+    console.log('[distributorStore] refreshCache: Supabase client OK, querying...');
+
+    const { data, error } = await sb
       .from('tracked_distributors')
       .select('chain_key, address')
       .gte('last_seen_at', cutoff);
 
     if (error) {
-      console.error('[distributorStore] cache refresh error:', error.message);
+      console.error('[distributorStore] cache refresh error:', error.message, JSON.stringify(error));
       return;
     }
+
+    console.log(`[distributorStore] refreshCache: got ${data?.length ?? 0} rows from DB`);
 
     cache.clear();
     for (const row of data || []) {
@@ -163,6 +169,10 @@ export async function cleanupExpired(): Promise<void> {
 
 /** Load cache from DB at boot + schedule hourly cleanup */
 export async function initStore(): Promise<void> {
+  console.log('[distributorStore] initStore: starting...');
+  console.log('[distributorStore] SUPABASE_URL=%s', process.env.SUPABASE_URL ? '(set)' : '(NOT SET)');
+  console.log('[distributorStore] SUPABASE_SERVICE_ROLE_KEY=%s', process.env.SUPABASE_SERVICE_ROLE_KEY ? '(set)' : '(NOT SET)');
+
   await refreshCache();
 
   setInterval(() => {
@@ -170,4 +180,6 @@ export async function initStore(): Promise<void> {
       console.error('[distributorStore] scheduled cleanup error:', err?.message)
     );
   }, 60 * 60 * 1000);
+
+  console.log('[distributorStore] initStore: done');
 }
