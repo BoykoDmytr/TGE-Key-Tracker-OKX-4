@@ -53,7 +53,7 @@ function escMdV2Url(url: string): string {
 }
 
 // ====== EXTRACT DISTRIBUTOR ADDRESS FROM RECEIPT LOGS ======
-function extractDistributorAddresses(receipt: { logs: any[] }, chainKey: ChainKey): void {
+async function extractDistributorAddresses(receipt: { logs: any[] }, chainKey: ChainKey): Promise<void> {
   const logs = receipt?.logs ?? [];
   for (const log of logs) {
     const topics = log.topics ?? [];
@@ -87,7 +87,7 @@ function extractDistributorAddresses(receipt: { logs: any[] }, chainKey: ChainKe
 
     if (distributorAddr && distributorAddr.length === 42) {
       console.log(`[server] DistributorCreated detected on ${chainKey}: ${distributorAddr}`);
-      addDistributor(chainKey, distributorAddr);
+      await addDistributor(chainKey, distributorAddr);
     }
   }
 }
@@ -251,7 +251,7 @@ app.post('/webhooks/tenderly', express.raw({ type: 'application/json' }), async 
 
     // ===== FLOW 2: Extract DistributorCreated events and track addresses =====
     try {
-      extractDistributorAddresses(receipt, chainKey);
+      await extractDistributorAddresses(receipt, chainKey);
     } catch (err: any) {
       req.log.warn({ err: err?.message }, 'Failed to extract DistributorCreated addresses (non-fatal)');
     }
@@ -410,8 +410,10 @@ const port = Number(process.env.PORT || 8080);
 app.listen(port, () => {
   console.log(`Listening on :${port}`);
 
-  // Start Flow 2: top-up poller
-  startTopUpPoller();
+  // Start Flow 2: top-up poller (loads addresses from Supabase)
+  startTopUpPoller().catch((err) =>
+    console.error('[boot] Failed to start topUpPoller:', err?.message)
+  );
 });
 
 function normalizeTenderlyNetwork(net: string): ChainKey | null {

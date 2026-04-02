@@ -34,6 +34,10 @@ export function getPublicClient(chainKey) {
     clients.set(chainKey, client);
     return client;
 }
+/** Returns all chain keys that have an RPC configured */
+export function getConfiguredChains() {
+    return Object.keys(RPC).filter((k) => Boolean(RPC[k]));
+}
 // Hardcoded fallbacks
 const DEFAULT_EXPLORERS = {
     bsc: 'https://bscscan.com/tx/',

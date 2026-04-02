@@ -11,6 +11,7 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.101.1",
     "axios": "^1.7.7",
     "dotenv": "^16.6.1",
     "express": "^4.22.1",

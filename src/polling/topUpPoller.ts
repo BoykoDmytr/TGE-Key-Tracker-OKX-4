@@ -4,7 +4,13 @@ import { getErc20MetaCached, formatUnitsSafe } from '../evm/erc20MetaCache.js';
 import { isDuplicate, markDuplicate } from '../dedupe.js';
 import { sendTelegramDebug } from '../telegram.js';
 import { formatNumberWithCommas } from '../utils/formatNumberWithCommas.js';
-import { getDistributors, getActiveChains, touchDistributor, totalTracked } from './distributorStore.js';
+import {
+  getDistributors,
+  getActiveChains,
+  touchDistributor,
+  totalTracked,
+  initStore,
+} from './distributorStore.js';
 
 const TRANSFER_TOPIC0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 
@@ -22,17 +28,6 @@ const NETWORK_PRETTY: Record<ChainKey, string> = {
   ethereum: 'Ethereum',
   avalanche: 'Avalanche',
   optimism: 'Optimism',
-};
-
-// Address explorers (for address, not tx)
-const DEFAULT_ADDRESS_EXPLORERS: Record<ChainKey, string> = {
-  bsc: 'https://bscscan.com/address/',
-  bsc_testnet: 'https://testnet.bscscan.com/address/',
-  base: 'https://basescan.org/address/',
-  arbitrum: 'https://arbiscan.io/address/',
-  ethereum: 'https://etherscan.io/address/',
-  avalanche: 'https://snowtrace.io/address/',
-  optimism: 'https://optimistic.etherscan.io/address/',
 };
 
 function escHtml(s: string): string {
@@ -65,7 +60,7 @@ async function initBlockForChain(chainKey: ChainKey): Promise<bigint> {
 }
 
 async function pollChain(chainKey: ChainKey): Promise<void> {
-  const addresses = getDistributors(chainKey);
+  const addresses = await getDistributors(chainKey);
   if (addresses.length === 0) return;
 
   const client = getPublicClient(chainKey) as any;
@@ -165,8 +160,8 @@ async function processTransferLog(chainKey: ChainKey, log: any, client: any): Pr
     // Filter by min amount
     if (!Number.isNaN(amountNum) && amountNum < MIN_AMOUNT) return;
 
-    // Refresh TTL for the distributor
-    touchDistributor(chainKey, to);
+    // Refresh TTL for the distributor in Supabase
+    await touchDistributor(chainKey, to);
 
     const networkPretty = NETWORK_PRETTY[chainKey] || chainKey;
     const amountLine = `${formatNumberWithCommas(amountHuman)} $${meta.symbol}`;
@@ -191,21 +186,24 @@ async function processTransferLog(chainKey: ChainKey, log: any, client: any): Pr
 let pollerTimer: ReturnType<typeof setInterval> | null = null;
 
 async function pollAllChains(): Promise<void> {
-  const chains = getActiveChains();
+  const chains = await getActiveChains();
   if (chains.length === 0) return;
 
-  console.log(`[topUpPoller] polling ${chains.length} chains, ${totalTracked()} tracked addresses`);
+  const total = await totalTracked();
+  console.log(`[topUpPoller] polling ${chains.length} chains, ${total} tracked addresses`);
 
-  // Poll all chains in parallel
   await Promise.allSettled(
     chains.map((chainKey) => pollChain(chainKey))
   );
 }
 
-export function startTopUpPoller(): void {
+export async function startTopUpPoller(): Promise<void> {
   console.log(`[topUpPoller] starting with interval=${POLL_INTERVAL_MS}ms, minAmount=${MIN_AMOUNT}`);
 
-  // Initial poll after a short delay to let server boot
+  // Load addresses from Supabase into cache
+  await initStore();
+
+  // Initial poll after a short delay
   setTimeout(() => {
     pollAllChains().catch((err) =>
       console.error('[topUpPoller] initial poll error:', err?.message)

@@ -9,18 +9,24 @@ import { getErc20MetaCached, formatUnitsSafe } from './evm/erc20MetaCache.js';
 import { isDuplicate, markDuplicate } from './dedupe.js';
 import { sendTelegram } from './telegram.js';
 import { formatNumberWithCommas } from './utils/formatNumberWithCommas.js';
+// Flow 2: top-up polling
+import { addDistributor } from './polling/distributorStore.js';
+import { startTopUpPoller } from './polling/topUpPoller.js';
 const app = express();
 // ✅ GLOBAL MIN AMOUNT FILTER (tokens)
 const MIN_TOKEN_AMOUNT = 5000;
+// DistributorCreated event topic0
+const DISTRIBUTOR_CREATED_TOPIC0 = '0xe31b7f4b4f3b6042afb5723869d989be921bea013625e326792f25a623ea6c20';
 // ====== BOOT LOG ======
-console.log('[boot] server.ts version=2026-02-12TXX:XXZ allTokensMode=ON');
+console.log('[boot] server.ts version=2026-04-02 allTokensMode=ON topUpPoller=ON');
 console.log('[boot] NODE_ENV=%s PORT=%s', process.env.NODE_ENV, process.env.PORT);
 console.log('[boot] CHAINS=%s', process.env.CHAINS || '(not set)');
 console.log('[boot] INTERACTION_CONTRACT=%s', process.env.INTERACTION_CONTRACT || '(not set)');
 console.log('[boot] THRESHOLDS_JSON=%s', process.env.THRESHOLDS_JSON ? '(set)' : '(not set)');
 console.log('[boot] TOKEN_LABELS_JSON=%s', process.env.TOKEN_LABELS_JSON ? '(set)' : '(not set)');
 console.log('[boot] TENDERLY_SIGNING_KEY=%s', process.env.TENDERLY_SIGNING_KEY ? '(set)' : '(not set)');
-console.log('[boot] REDIS_URL=%s', process.env.REDIS_URL ? '(set)' : '(not set)');
+console.log('[boot] TELEGRAM_CHAT_ID_DEBUG=%s', process.env.TELEGRAM_CHAT_ID_DEBUG ? '(set)' : '(not set)');
+console.log('[boot] TOPUP_POLL_INTERVAL_MS=%s', process.env.TOPUP_POLL_INTERVAL_MS || '60000 (default)');
 const pinoHttp = pinoHttpNS.default ?? pinoHttpNS;
 app.use(pinoHttp());
 // ====== ROUTES ======
@@ -28,12 +34,47 @@ app.get('/health', (_req, res) => res.status(200).send('ok'));
 app.get('/webhooks/tenderly', (_req, res) => res.status(200).send('ok - use POST here'));
 // ====== TELEGRAM MARKDOWNV2 HELPERS ======
 function escMdV2(s) {
-    // Escape Telegram MarkdownV2 special chars
     return s.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
 }
 function escMdV2Url(url) {
-    // In MarkdownV2 links, you must escape ')' and '\' at minimum
     return url.replace(/\\/g, '\\\\').replace(/\)/g, '\\)');
+}
+// ====== EXTRACT DISTRIBUTOR ADDRESS FROM RECEIPT LOGS ======
+async function extractDistributorAddresses(receipt, chainKey) {
+    const logs = receipt?.logs ?? [];
+    for (const log of logs) {
+        const topics = log.topics ?? [];
+        if (!topics[0] || typeof topics[0] !== 'string')
+            continue;
+        if (topics[0].toLowerCase() !== DISTRIBUTOR_CREATED_TOPIC0)
+            continue;
+        // DistributorCreated(address owner, address operator, address token, address distributorAddress)
+        // topics[0] = event sig
+        // For indexed params: topics[1]=owner, topics[2]=operator, topics[3]=token
+        // distributorAddress is in the non-indexed data OR it could be 4th topic
+        // Let's check both patterns:
+        // Pattern 1: all 4 params indexed -> topics[1]=owner, topics[2]=operator, topics[3]=token
+        // and distributorAddress in data
+        // Pattern 2: some indexed differently
+        // Based on the event signature, let's parse from data if available,
+        // or from the last topic
+        let distributorAddr = null;
+        // Try: if data has at least 32 bytes (one address in data)
+        const data = log.data || '0x';
+        if (data.length >= 66) {
+            // distributorAddress is the first 32-byte word in data
+            distributorAddr = '0x' + data.slice(26, 66); // remove 0x + 12 bytes padding
+        }
+        else if (topics.length >= 4) {
+            // All 4 params indexed, distributorAddress could be in topics
+            // Actually unlikely for 4 params. Let's try last topic.
+            distributorAddr = '0x' + topics[3].slice(-40);
+        }
+        if (distributorAddr && distributorAddr.length === 42) {
+            console.log(`[server] DistributorCreated detected on ${chainKey}: ${distributorAddr}`);
+            await addDistributor(chainKey, distributorAddr);
+        }
+    }
 }
 // ====== WEBHOOK HANDLER ======
 app.post('/webhooks/tenderly', express.raw({ type: 'application/json' }), async (req, res) => {
@@ -150,6 +191,14 @@ app.post('/webhooks/tenderly', express.raw({ type: 'application/json' }), async 
             status: receipt?.status,
             blockNumber: receipt?.blockNumber?.toString?.() ?? receipt?.blockNumber,
         }, 'receipt fetched');
+        // ===== FLOW 2: Extract DistributorCreated events and track addresses =====
+        try {
+            await extractDistributorAddresses(receipt, chainKey);
+        }
+        catch (err) {
+            req.log.warn({ err: err?.message }, 'Failed to extract DistributorCreated addresses (non-fatal)');
+        }
+        // ===== FLOW 1: Process ERC-20 transfers (unchanged logic) =====
         const transfers = extractTransfersFromReceipt(receipt);
         req.log.info({ transfersCount: transfers.length }, 'parsed transfers');
         if (!transfers.length)
@@ -223,19 +272,16 @@ app.post('/webhooks/tenderly', express.raw({ type: 'application/json' }), async 
             if (!pass)
                 continue;
             const explorer = getExplorerTxUrl(chainKey, txHash);
-            // красиве ім’я мережі без underscore (щоб не ламало Markdown)
             const networkPretty = chainKey === 'bsc_testnet' ? 'BSC Testnet' :
                 chainKey === 'bsc' ? 'BSC' :
                     chainKey === 'base' ? 'Base' :
                         chainKey === 'arbitrum' ? 'Arbitrum' :
-                            chainKey === 'ethereum' ? 'Ethereum' : // нове
-                                chainKey === 'avalanche' ? 'Avalanche' : // нове
-                                    chainKey === 'optimism' ? 'Optimism' : // нове
+                            chainKey === 'ethereum' ? 'Ethereum' :
+                                chainKey === 'avalanche' ? 'Avalanche' :
+                                    chainKey === 'optimism' ? 'Optimism' :
                                         chainKey;
             const label = tokenLabelsLower[tokenAddrLower] || meta.symbol;
             const amountLine = `${formatNumberWithCommas(amountHuman)} $${label}`;
-            // ✅ MESSAGE EXACT FORMAT (MarkdownV2 + quote + link)
-            // IMPORTANT: sendTelegram must use parse_mode: 'MarkdownV2'
             function escHtml(s) {
                 return s
                     .replace(/&/g, '&amp;')
@@ -248,7 +294,7 @@ app.post('/webhooks/tenderly', express.raw({ type: 'application/json' }), async 
                 `Amount: ${escHtml(amountLine)}\n` +
                 `Network: ${escHtml(networkPretty)}\n` +
                 `<a href="${escHtml(explorer)}">${escHtml('View on Scan')}</a>\n\n` +
-                `@cryptohornettg`;
+                `<a href="https://t.me/cryptohornettg/1354">Refback 45%</a>`;
             req.log.info({ messagePreview: message.slice(0, 200) }, 'sending telegram');
             await sendTelegram(message);
             sentCount++;
@@ -269,10 +315,13 @@ app.post('/webhooks/tenderly', express.raw({ type: 'application/json' }), async 
 });
 // ====== START ======
 const port = Number(process.env.PORT || 8080);
-app.listen(port, () => console.log(`Listening on :${port}`));
+app.listen(port, () => {
+    console.log(`Listening on :${port}`);
+    // Start Flow 2: top-up poller (loads addresses from Supabase)
+    startTopUpPoller().catch((err) => console.error('[boot] Failed to start topUpPoller:', err?.message));
+});
 function normalizeTenderlyNetwork(net) {
     const n = String(net).toLowerCase().trim();
-    // Chain ID формати
     if (n === '56')
         return 'bsc';
     if (n === '97')
@@ -282,12 +331,11 @@ function normalizeTenderlyNetwork(net) {
     if (n === '42161')
         return 'arbitrum';
     if (n === '1')
-        return 'ethereum'; // нове: Ethereum Mainnet
+        return 'ethereum';
     if (n === '43114')
-        return 'avalanche'; // нове: Avalanche C‑Chain
+        return 'avalanche';
     if (n === '10')
-        return 'optimism'; // нове: Optimism
-    // Текстові формати
+        return 'optimism';
     if (n.includes('bsc') && n.includes('test'))
         return 'bsc_testnet';
     if (n.includes('bsc') || n.includes('bnb'))
@@ -297,11 +345,11 @@ function normalizeTenderlyNetwork(net) {
     if (n.includes('arbitrum'))
         return 'arbitrum';
     if (n.includes('eth') || n.includes('ethereum'))
-        return 'ethereum'; // нове
+        return 'ethereum';
     if (n.includes('avax') || n.includes('avalanche'))
-        return 'avalanche'; // нове
+        return 'avalanche';
     if (n.includes('op') || n.includes('optimism'))
-        return 'optimism'; // нове
+        return 'optimism';
     return null;
 }
 function safeJson(s) {
