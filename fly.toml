@@ -1,9 +1,9 @@
-# fly.toml app configuration file generated for tge-key-tracker-okx-2 on 2026-03-29T18:37:23Z
+# fly.toml app configuration file generated for tge-key-tracker-okx-4 on 2026-04-02T10:29:14Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'tge-key-tracker-okx-2'
+app = 'tge-key-tracker-okx-4'
 primary_region = 'ams'
 
 [build]
@@ -11,7 +11,7 @@ primary_region = 'ams'
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "off"
+  auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
   processes = ['app']
