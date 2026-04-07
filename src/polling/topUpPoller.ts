@@ -15,7 +15,7 @@ import {
 const TRANSFER_TOPIC0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 
 const POLL_INTERVAL_MS = Number(process.env.TOPUP_POLL_INTERVAL_MS || 60_000);
-const MIN_AMOUNT = Number(process.env.TOPUP_MIN_AMOUNT || 5000);
+
 
 // Track last checked block per chain
 const lastCheckedBlock = new Map<ChainKey, bigint>();
@@ -157,9 +157,6 @@ async function processTransferLog(chainKey: ChainKey, log: any, client: any): Pr
     const amountHuman = formatUnitsSafe(value, meta.decimals);
     const amountNum = Number(amountHuman);
 
-    // Filter by min amount
-    if (!Number.isNaN(amountNum) && amountNum < MIN_AMOUNT) return;
-
     // Refresh TTL for the distributor in Supabase
     await touchDistributor(chainKey, to);
 
@@ -198,7 +195,6 @@ async function pollAllChains(): Promise<void> {
 }
 
 export async function startTopUpPoller(): Promise<void> {
-  console.log(`[topUpPoller] starting with interval=${POLL_INTERVAL_MS}ms, minAmount=${MIN_AMOUNT}`);
 
   // Load addresses from Supabase into cache
   try {

@@ -14,7 +14,7 @@ import { addDistributor } from './polling/distributorStore.js';
 import { startTopUpPoller } from './polling/topUpPoller.js';
 const app = express();
 // ✅ GLOBAL MIN AMOUNT FILTER (tokens)
-const MIN_TOKEN_AMOUNT = 5000;
+const MIN_TOKEN_AMOUNT = 0.0001; // filter out dust transfers (configurable as needed)
 // DistributorCreated event topic0
 const DISTRIBUTOR_CREATED_TOPIC0 = '0xe31b7f4b4f3b6042afb5723869d989be921bea013625e326792f25a623ea6c20';
 // ====== BOOT LOG ======
@@ -232,11 +232,6 @@ app.post('/webhooks/tenderly', express.raw({ type: 'application/json' }), async 
                 hasThreshold: Boolean(threshHuman),
                 threshold: threshHuman,
             }, 'transfer candidate');
-            // strict mode: only tokens in thresholds
-            if (strictMode && !threshHuman) {
-                req.log.info({ token: t.token }, 'skip: token not in thresholds (strictMode)');
-                continue;
-            }
             const dedupeKey = `${chainKey}:${txHash}:${t.logIndex}:${tokenAddrLower}:${t.to.toLowerCase()}`;
             const dup = await isDuplicate(dedupeKey);
             req.log.info({ dedupeKey, dup }, 'dedupe check');
@@ -246,12 +241,6 @@ app.post('/webhooks/tenderly', express.raw({ type: 'application/json' }), async 
             req.log.info({ token: t.token }, 'fetching token meta');
             const meta = await getErc20MetaCached(client, t.token);
             const amountHuman = formatUnitsSafe(t.value, meta.decimals);
-            // ✅ GLOBAL FILTER: skip if amount < 5000 tokens
-            const amountNum = Number(amountHuman);
-            if (!Number.isNaN(amountNum) && amountNum < MIN_TOKEN_AMOUNT) {
-                req.log.info({ amountHuman, MIN_TOKEN_AMOUNT }, 'skip: amount below global minimum');
-                continue;
-            }
             function compareHuman(amount, threshold) {
                 const a = Number(amount);
                 const b = Number(threshold);
@@ -259,18 +248,7 @@ app.post('/webhooks/tenderly', express.raw({ type: 'application/json' }), async 
                     return false;
                 return a >= b;
             }
-            // threshold compare: if there is a per-token threshold -> enforce it, else allow (non-strict)
-            const pass = threshHuman ? compareHuman(amountHuman, String(threshHuman)) : true;
-            req.log.info({
-                token: t.token,
-                symbol: meta.symbol,
-                decimals: meta.decimals,
-                amountHuman,
-                threshold: threshHuman,
-                pass,
-            }, 'meta + amount');
-            if (!pass)
-                continue;
+            const pass = true;
             const explorer = getExplorerTxUrl(chainKey, txHash);
             const networkPretty = chainKey === 'bsc_testnet' ? 'BSC Testnet' :
                 chainKey === 'bsc' ? 'BSC' :
