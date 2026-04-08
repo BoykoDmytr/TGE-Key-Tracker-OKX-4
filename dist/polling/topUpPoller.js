@@ -37,9 +37,11 @@ async function initBlockForChain(chainKey) {
     try {
         const client = getPublicClient(chainKey);
         const blockNumber = await client.getBlockNumber();
-        lastCheckedBlock.set(chainKey, blockNumber);
-        console.log(`[topUpPoller] initialized ${chainKey} at block ${blockNumber}`);
-        return blockNumber;
+        // Offset by 10 blocks so the first poll has a small window to check
+        const initBlock = blockNumber > 10n ? blockNumber - 10n : blockNumber;
+        lastCheckedBlock.set(chainKey, initBlock);
+        console.log(`[topUpPoller] initialized ${chainKey} at block ${initBlock} (current: ${blockNumber})`);
+        return initBlock;
     }
     catch (err) {
         console.error(`[topUpPoller] failed to init block for ${chainKey}: ${err?.message}`);
@@ -162,11 +164,16 @@ async function processTransferLog(chainKey, log, client) {
 }
 let pollerTimer = null;
 async function pollAllChains() {
-    const chains = await getActiveChains();
+    const allChains = await getActiveChains();
+    // Filter by CHAINS env allowlist (same logic as Flow 1 webhook handler)
+    const allow = new Set((process.env.CHAINS || '').split(',').map((s) => s.trim()).filter(Boolean));
+    const chains = allow.size > 0
+        ? allChains.filter((c) => allow.has(c))
+        : allChains;
     if (chains.length === 0)
         return;
     const total = await totalTracked();
-    console.log(`[topUpPoller] polling ${chains.length} chains, ${total} tracked addresses`);
+    console.log(`[topUpPoller] polling ${chains.length} chains (of ${allChains.length} total), ${total} tracked addresses`);
     await Promise.allSettled(chains.map((chainKey) => pollChain(chainKey)));
 }
 export async function startTopUpPoller() {
