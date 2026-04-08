@@ -15,7 +15,7 @@ import {
 const TRANSFER_TOPIC0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 
 const POLL_INTERVAL_MS = Number(process.env.TOPUP_POLL_INTERVAL_MS || 60_000);
-
+const MIN_AMOUNT = Number(process.env.TOPUP_MIN_AMOUNT || 5000);
 
 // Track last checked block per chain
 const lastCheckedBlock = new Map<ChainKey, bigint>();
@@ -60,7 +60,9 @@ async function initBlockForChain(chainKey: ChainKey): Promise<bigint> {
 }
 
 async function pollChain(chainKey: ChainKey): Promise<void> {
+  console.log(`[topUpPoller] pollChain(${chainKey}): start`);
   const addresses = await getDistributors(chainKey);
+  console.log(`[topUpPoller] pollChain(${chainKey}): got ${addresses.length} addresses`);
   if (addresses.length === 0) return;
 
   const client = getPublicClient(chainKey) as any;
@@ -74,19 +76,25 @@ async function pollChain(chainKey: ChainKey): Promise<void> {
   let latestBlock: bigint;
   try {
     latestBlock = await client.getBlockNumber();
+    console.log(`[topUpPoller] ${chainKey}: latestBlock=${latestBlock}, fromBlock=${fromBlock}`);
   } catch (err: any) {
     console.error(`[topUpPoller] ${chainKey} getBlockNumber failed: ${err?.message}`);
     return;
   }
 
   // Nothing new
-  if (latestBlock <= fromBlock) return;
+  if (latestBlock <= fromBlock) {
+    console.log(`[topUpPoller] ${chainKey}: no new blocks`);
+    return;
+  }
 
   // Limit block range to avoid huge queries (max 2000 blocks per poll)
   const MAX_BLOCK_RANGE = 2000n;
   const effectiveFrom = latestBlock - fromBlock > MAX_BLOCK_RANGE
     ? latestBlock - MAX_BLOCK_RANGE
     : fromBlock + 1n;
+
+  console.log(`[topUpPoller] ${chainKey}: querying logs from ${effectiveFrom} to ${latestBlock}`);
 
   // Build padded addresses for topics[2] filter
   const paddedAddresses = addresses.map(
@@ -107,9 +115,7 @@ async function pollChain(chainKey: ChainKey): Promise<void> {
       }],
     });
 
-    if (logs && logs.length > 0) {
-      console.log(`[topUpPoller] ${chainKey}: found ${logs.length} Transfer logs in blocks ${effectiveFrom}-${latestBlock}`);
-    }
+    console.log(`[topUpPoller] ${chainKey}: getLogs returned ${logs?.length ?? 0} logs`);
 
     for (const log of (logs || [])) {
       await processTransferLog(chainKey, log, client);
@@ -157,6 +163,9 @@ async function processTransferLog(chainKey: ChainKey, log: any, client: any): Pr
     const amountHuman = formatUnitsSafe(value, meta.decimals);
     const amountNum = Number(amountHuman);
 
+    // Filter by min amount
+    if (!Number.isNaN(amountNum) && amountNum < MIN_AMOUNT) return;
+
     // Refresh TTL for the distributor in Supabase
     await touchDistributor(chainKey, to);
 
@@ -195,6 +204,7 @@ async function pollAllChains(): Promise<void> {
 }
 
 export async function startTopUpPoller(): Promise<void> {
+  console.log(`[topUpPoller] starting with interval=${POLL_INTERVAL_MS}ms, minAmount=${MIN_AMOUNT}`);
 
   // Load addresses from Supabase into cache
   try {
